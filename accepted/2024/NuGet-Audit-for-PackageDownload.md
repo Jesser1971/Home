@@ -7,38 +7,42 @@
 ## Summary
 
 <!-- One-paragraph description of the proposal. -->
-In our effort to strengthen the security of NuGet, we would like to expand the support of NuGet Audit to `<PackageDownload>` packages. 
-This will be done by introducing vulnerability errors for packages downloaded using `PackageDownload`.
-However, the .Net sdk also makes use of `PackageDownload` to implicitly download packages. And we would like to make sure these packages are not also receiving these errors, in order to prevent customers being confused.
-This will be done by introducing a new attribute to `PackageDownload` that makes it clear to NuGet Audit it should not write an error for these packages.
+To improve the security of NuGet, we are expanding NuGet Audit's support to include `<PackageDownload>` packages, allowing it to report vulnerabilities for both user-specified and SDK-managed packages.
+To prevent user confusion about SDK-included dependencies, we are introducing a new attribute, `AddedBy`, to identify the origin of each `<PackageDownload>`.
+This will provide users with clear, actionable security information while helping them distinguish between SDK-provisioned packages and those they added manually.
 
 ## Motivation
 
 <!-- Why are we doing this? What pain points does this solve? What is the expected outcome? -->
 
-We are expanding NuGet Audit to `<PackageDownload>` packages to improve security notifications for user-specified dependencies, addressing gaps in vulnerability alerts that currently miss these packages.
-This change prevents confusion by excluding SDK-managed PackageDownloads from error reports, ensuring users only see relevant security issues.
-The expected outcome is a more precise and useful vulnerability reporting experience, enabling users to address actual risks without unnecessary SDK-related alerts.
+We are expanding NuGet Audit to `<PackageDownload>` packages to improve security notifications, addressing gaps in vulnerability alerts that currently miss these packages.
+This change prevents confusion by clarifying SDK-managed PackageDownloads in the warning reports, ensuring users have an actionable warning.
+The expected outcome is a more precise and useful vulnerability reporting experience, enabling users to address actual risks without confusing SDK-related alerts.
 
 ## Explanation
 
 ### Functional explanation
 
-<!-- Explain the proposal as if it were already implemented and you're teaching it to another person. -->
-<!-- Introduce new concepts, functional designs with real life examples, and low-fidelity mockups or  pseudocode to show how this proposal would look. -->
-
 The NuGet Audit now supports `<PackageDownload>` packages, allowing it to detect and alert users about vulnerabilities in any user-specified dependencies downloaded via `<PackageDownload>`. 
 This means you’ll now receive warnings if a package added via `<PackageDownload>` has known security issues, so you can quickly address them.
 
-However, the .NET SDK itself also uses `<PackageDownload>` to pull in SDK-specific dependencies, and to avoid confusing users, these SDK-managed packages are excluded from NuGet Audit warnings. 
-We achieve this using a new attribute on `<PackageDownload>` entries in the SDK, such as `IsImplicitlyDefined="true"`. 
-When NuGet Audit sees this attribute, it knows to skip auditing this package.
+To prevent confusion about SDK-managed packages, we introduce a new attribute, `AddedBy`, on `<PackageDownload>` entries.
+This attribute will specify the source of the package, with values like `"dotnetsdk"` for SDK-managed packages and `"user"` for user-added dependencies.
+When a package marked with `AddedBy="dotnetsdk"` has a vulnerability, the warning will indicate that the package was added by the SDK.
+This will help users understand that the package originates from the SDK and is not something they explicitly added.
 
-We skip the packages from the .NET SDK, because the warnings could be confusing for the regular users of the SDK who are not aware of these packages. 
-To make sure users are aware of these packges are vulnerable as discussed in https://github.com/dotnet/sdk/issues/44421
-> We should come up with an experience that notifies the user that the SDK is out of date and that they may be vulnerable to security issues. 
-This experience should probably not even refer to PackageDownloads, as that’s an implementation detail of the SDK. 
-We could have the same or similar experience for notifying that the SDK is out of date that isn’t driven by NuGet audit (and doesn’t depend on the project needing a PackageDownload).
+| Attribute | Value     | Warning   |
+|-----------|-----------|-----------|
+| AddedBy   | dotnetsdk | warning NU1906: Package 'System.Text.Json' 1.0.0, added by '.NET SDK', has a known vulnerability. Refer to the vulnerability details at https://github.com/advisories/GHSA-g3q9-xf95-8hp5 to assess any necessary actions. |
+| AddedBy   | user      | warning NU1906: Package 'System.Text.Json' 1.0.0, added by 'user', has a known vulnerability. Refer to the vulnerability details at https://github.com/advisories/GHSA-g3q9-xf95-8hp5 to assess any necessary actions. |
+| AddedBy   | undefined | warning NU1906: Package 'System.Text.Json' 1.0.0 has a known vulnerability. Refer to the vulnerability details at https://github.com/advisories/GHSA-g3q9-xf95-8hp5 to assess any necessary actions. |
+
+However, all of these warnings will be gated by the `SDKAnalysisLevel` property.
+The warnings will only be shown if the user is using a .NET SDK version that introduced these warnings or newer.
+For example, if these warnings are introduced in SDK version 9.0.300, the warnings will only appear if `SDKAnalysisLevel` is defined and set to 9.0.300 or higher.
+
+This gating mechanism ensures that users will not see confusing or unexpected warnings for SDK-provided packages if they choose to configure their environment to use an older SDK version.
+It allows NuGet Audit to provide clear, relevant security warnings without overwhelming users with alerts for packages controlled by earlier SDK versions.
 
 #### Real-Life Example
 
@@ -54,32 +58,20 @@ If "NuGet.Protocol" is found to have a vulnerability, NuGet Audit will issue a w
 
 ##### Warning NU1906
 
-> warning NU1906: Package 'NuGet.Protocol' 5.11.2 has a known moderate severity vulnerability, https://github.com/advisories/GHSA-g3q9-xf95-8hp5
-
+> warning NU1906: Package 'System.Text.Json' 1.0.0 has a known vulnerability. Refer to the vulnerability details at https://github.com/advisories/GHSA-g3q9-xf95-8hp5 to assess any necessary actions
 
 On the other hand imagine the SDK has the package `System.Text.Json`. The SDK would download this package as follows
 
 ```xml
 <ItemGroup>
-    <PackageDownload Include="System.Text.Json" Version="[1.0.0]" IsImplicitlyDefined="true"/>
+    <PackageDownload Include="System.Text.Json" Version="[1.0.0]" AddedBy="dotnetsdk"/>
 </ItemGroup>
 ```
 
-Since this was implicitly added, no warnings are received by the user.
+The warning for the following will make it clear that the package was added by the SDK
 
-#### Functional Design
+> warning NU1906: Package 'System.Text.Json' 1.0.0, added by '.NET SDK', has a known vulnerability. Refer to the vulnerability details at https://github.com/advisories/GHSA-g3q9-xf95-8hp5 to assess any necessary actions.
 
-Here’s a pseudocode version of how this exclusion works:
-
-```csharp
-foreach (package in PackageDownloads):
-    if (package.HasAttribute("IsImplicitlyDefined") && package.IsImplicitlyDefined == true):
-        continue  // Skip auditing, as it's an SDK-managed package
-    else:
-        checkForVulnerabilities(package)
-```
-
-Now this ensures users are provided with NuGet Audit warnings that are not confusing and actionable.
 
 ### Technical explanation
 
@@ -87,13 +79,12 @@ Now this ensures users are provided with NuGet Audit warnings that are not confu
 
 The following technical components will support the proposal's functionality:
 
-1. **New Attribute for SDK-Specific PackageDownloads:** A new attribute, named `IsImplicitlyDefined="true"`, will be added to <PackageDownload> entries within the SDK.
+1. **New Attribute for SDK-Specific PackageDownloads:** A new attribute, named `AddedBy="dotnetsdk"`, will be added to <PackageDownload> entries within the SDK.
  This will also be done in project-system to make sure VS nominations are working in a similar manner. 
  Add the property [here](https://github.com/dotnet/project-system/blob/9f35656ad68aa1352d7b6b0fd01784f7aefe1005/src/Microsoft.VisualStudio.ProjectSystem.Managed/ProjectSystem/Rules/CollectedPackageDownload.xaml#L3) for project-system.
 
-1. **NuGet Audit Update to Handle Attribute:** NuGet Audit will be modified to recognize the new attribute and exclude SDK-flagged PackageDownloads from security alerts. 
-This update ensures that only relevant <PackageDownload> packages, added directly by the user, are scanned for vulnerabilities, allowing users to remain informed without SDK-related alerts.
-
+1. **NuGet Audit Update to Handle Attribute:** NuGet Audit will be modified to recognize the new attribute and clarify SDK-flagged PackageDownloads in security alerts.
+This update ensures that all <PackageDownload> packages are scanned for vulnerabilities, allowing users to remain informed.
 
 ## Drawbacks
 
@@ -104,6 +95,15 @@ This update ensures that only relevant <PackageDownload> packages, added directl
 <!-- Why is this the best design compared to other designs? -->
 <!-- What other designs have been considered and why weren't they chosen? -->
 <!-- What is the impact of not doing this? -->
+
+Here are some alternate designs
+
+- Warn for all `PackageDownload` packages without clarifying how the package was added.
+  - This could lead to users getting confused.
+    If a package downloaded by the .NET SDK has a vulnerability, the will end up getting a vulnerability warning.
+    However, since the user did not add these packages, they could be lost on what action they should take in order to resolve the warnings.
+- Warn only for user defined packages.
+  - This prevents users from learning about their SDK being vulnerable.
 
 ## Prior Art
 
