@@ -8,6 +8,7 @@
 
 <!-- One-paragraph description of the proposal. -->
 To improve the security of NuGet, we are expanding NuGet Audit's support to include `<PackageDownload>` packages, allowing it to report vulnerabilities for both user-specified and SDK-managed packages.
+This warning will only appear when `NuGetAuditMode` is set to `all` or `direct-with-packagedownload`, ensuring targeted reporting based on user preferences.
 To prevent user confusion about SDK-included dependencies, we are introducing a new attribute, `AddedBy`, to identify the origin of each `<PackageDownload>`.
 This will provide users with clear, actionable security information while helping them distinguish between SDK-provisioned packages and those they added manually.
 
@@ -25,6 +26,7 @@ The expected outcome is a more precise and useful vulnerability reporting experi
 
 The NuGet Audit now supports `<PackageDownload>` packages, allowing it to detect and alert users about vulnerabilities in any user-specified dependencies downloaded via `<PackageDownload>`. 
 This means you’ll now receive warnings if a package added via `<PackageDownload>` has known security issues, so you can quickly address them.
+**Condition**: The warning will only be shown when `NuGetAuditMode` is set to `all` or `direct-with-packagedownload`.
 
 To prevent confusion about SDK-managed packages, we introduce a new attribute, `AddedBy`, on `<PackageDownload>` entries.
 This attribute will specify the source of the package, with values like `"dotnetsdk"` for SDK-managed packages and `"user"` for user-added dependencies.
@@ -44,6 +46,16 @@ For example, if these warnings are introduced in SDK version 9.0.300, the warnin
 This gating mechanism ensures that users will not see confusing or unexpected warnings for SDK-provided packages if they choose to configure their environment to use an older SDK version.
 It allows NuGet Audit to provide clear, relevant security warnings without overwhelming users with alerts for packages controlled by earlier SDK versions.
 
+#### `NuGetAuditMode` Enhancement
+
+The `NuGetAuditMode` property will now accept a new value, `direct-with-packagedownload`:
+
+- **Existing Values**:
+  - `direct`: Audits only direct dependencies (default).
+  - `all`: Audits both direct and transitive dependencies.
+- **New Value**:
+  - `direct-with-packagedownload`: Audits direct dependencies, including `<PackageDownload>` entries.
+
 #### Real-Life Example
 
 Imagine you have a project that downloads some libraries with `<PackageDownload>`:
@@ -52,6 +64,15 @@ Imagine you have a project that downloads some libraries with `<PackageDownload>
 <ItemGroup>
     <PackageDownload Include="NuGet.Protocol" Version="[5.11.2]" />
 </ItemGroup>
+```
+
+and assume the following properties have been set
+
+```xml
+<PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>direct-with-packagedownload</NuGetAuditMode>
+</PropertyGroup>
 ```
 
 If "NuGet.Protocol" is found to have a vulnerability, NuGet Audit will issue a warning to alert you so you can update to a safer version.
@@ -88,6 +109,8 @@ This update ensures that all <PackageDownload> packages are scanned for vulnerab
 
 ## Drawbacks
 
+**Configuration Overhead**: Users must opt into the `direct-with-packagedownload` mode to enable the new warnings.
+
 <!-- Why should we not do this? -->
 
 ## Rationale and alternatives
@@ -104,6 +127,17 @@ Here are some alternate designs
     However, since the user did not add these packages, they could be lost on what action they should take in order to resolve the warnings.
 - Warn only for user defined packages.
   - This prevents users from learning about their SDK being vulnerable.
+- When it comes to the NuGetAuditMode new property an alternative approach could have been introducing a separate property to toggle `<PackageDownload>` auditing:
+
+```xml
+<PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+    <EnableAuditPackageDownload>true</EnableAuditPackageDownload>
+</PropertyGroup>
+```
+
+However, introducing a separate property creates overlap with `NuGetAuditMode`, increasing configuration complexity
 
 ## Prior Art
 
